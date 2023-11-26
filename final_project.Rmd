@@ -1,0 +1,522 @@
+---
+title: "Fake News Neural Net Predictor"
+author: "Christy Yu"
+date: "2023-05-19"
+output: html_document
+---
+
+
+### Introduction and Data Description
+
+The aim of this project is to be able to differentiate fake and real news articles using a neural net. I will be using a dataset from Kaggle accessible from here:
+
+https://www.kaggle.com/datasets/ruchi798/source-based-news-classification
+
+This dataset contains 2096 entries of sample articles labeled real and fake. I obtained the dataset from Kaggle, linked above, downloaded as a .csv file and loaded it in my r markdown notebook. There are 2096 observations and 12 predictors.
+The variables are:
+
+`author:` String of name of author
+
+`published:` Published time
+
+`title:` String of article's title
+
+`text:` String of article itself
+
+`language:` String of language article is in
+
+`site_url:` String of article url
+
+`main_img_url:` String of url of image
+
+`type:` String of article type (bias/conspiracy/fake/bs/satire/hate/junksci/state)
+
+`label:` String of if article is real or fake
+
+`title_without_stopwords:` String of title of article minus stopwords
+
+`text_without_stopwords:` String of text of article minus stopwords
+
+`has_image:` whether the article contains an image or not
+
+
+### Project Outline
+
+After understanding the goals of this project and the understanding of the data, I will make an overview of the plans of this project. There will first be data cleaning and manipulation, then I will be doing an exploratory data analysis. The goal will be to predict the label (real, fake) and type (bias, conspiracy, fake, bs, satire, hate, junksci, state) using other predictor variables. I will then perform a training/test split on our data, make a recipe, and set folds for the 10-fold cross validation we will implement. I will implement logistic regression, k- nearest neighbors, random forest, and a neural net on the text to model the training data. After assessing the results from each model, I will pick the best model and determine how well it works on predicting fake news.
+
+### Table of Contents
+
+Setting up the environment
+
+Data Cleaning and Manipulation
+
+Dealing with missing data
+
+Exploratory data analysis
+
+Setting up models
+
+Train and test split
+
+Building recipe
+
+K-folds validation
+
+Model building (log reg, knn, random forest)
+
+Model assessment
+
+Implementing neural network
+
+Splitting train and testing and validation
+
+Creating layers
+
+Training the NN
+
+Evaluating
+
+Making predictions
+
+Conclusion
+
+
+### Setting up and cleaning dataset
+
+Setting up environment:
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# library(ggplot2)
+# library(tidyverse)
+library(tidymodels)
+# library(neuralnet)
+library(keras)
+library(text)
+# library(textdata)
+# library(corrplot)
+# library(word2vec)
+# library(reticulate)
+library(lubridate)
+# library(discrim)
+# library(MASS)
+# library(dplyr)
+# library(yardstick)
+# options(yardstick.event_first = FALSE)
+# library(parsnip)
+library(pROC)
+set.seed(333)  # setting a seed for reproducibility
+```
+
+Data Cleaning, Dealing with Missing Data:
+```{r data}
+data <- read.csv("news_articles.csv") %>%
+  janitor::clean_names()
+
+
+nrow(data[data$author == 'No Author',]) 
+#505 entries have no authors. Decided to leave this in because no authors or anonymity could play a big part in prediction.
+
+nrow(data[data$text == '',]) 
+#46 entries with missing text -- deleted from data set
+data <- subset(data, text != '')
+
+nrow(data[data$language == '',]) 
+
+#1 entry with missing language -- decided to only keep english entries. Additionally, I will remove this column after filtering to english only since it is redundant to keep.
+
+data <- subset(data, language == 'english')
+data <- subset(data, select = -c(language))
+
+nrow(data[data$main_img_url == '',]) 
+#only 1 entry with missing main image, so can delete
+data <- subset(data, main_img_url != '')
+
+nrow(data[data$type == '',]) 
+#only 1 entry with missing type (bias, conspiracy, fake, bs, satire, hate, junksci, state ), so can delete
+data <- subset(data, type != '')
+
+nrow(data[data$label == '',]) 
+#only 1 entry with missing label (fake, real) so can delete
+data <- subset(data, label != '')
+
+nrow(data[data$title_without_stopwords == '',])
+#2 entries with missing title. Left in as it could play a part in prediction albeit not much.
+
+nrow(data[data$text_without_stopwords == '',])
+#50 entry with missing text -- deleted, since text is most important part
+data <- subset(data, text_without_stopwords != '')
+
+```
+Additionally, I will change `label` into a boolean of 0 or 1. If article is real I will label it 1, else if fake it is 0.
+```{r}
+data$label <- as.integer(data$label == "Real")
+```
+
+As for published time, since they are all in the year 2016, I will only use the months. Including days will be too much, so I will replace `published` to become the month that the article was published in. 
+```{r}
+data$published <- ymd_hms(data$published)
+data$published <- month(data$published)
+data <- data[!is.na(data$published), ]
+```
+
+We will make sure the categorical variables are all factors, including label and has_image
+```{r}
+data$author <- as.factor(data$author) 
+data$published <- as.factor(data$published) 
+data$title <- as.factor(data$title) 
+data$text <- as.factor(data$text) 
+data$site_url <- as.factor(data$site_url)
+data$main_img_url <- as.factor(data$main_img_url) 
+data$type <- as.factor(data$type) 
+data$label <- as.factor(data$label) 
+data$title_without_stopwords <- as.factor(data$title_without_stopwords) 
+data$text_without_stopwords <- as.factor(data$text_without_stopwords) 
+data$has_image <- as.factor(data$has_image)
+```
+
+```{r}
+dim(data)
+```
+With a dataset of almost 2000 observations, we will have enough for our models to learn efficiently! Let's begin the visual data analysis.
+
+### Exploratory Data Analysis
+
+Remember that if an article is real, it's 1, else if fake it's 0. Here we can see the distrbution of fake and real articles, and notice that the number of fake articles outweight the number of real articles.
+```{r}
+data %>% 
+  ggplot(aes(x = label)) +
+  geom_bar() + 
+  labs(x = "Real or Fake", y = "Number of Articles", title = "Distribution of Real and Fake Articles")
+```
+
+Similarly, we can view the distribution of the type of articles. It seems there is highest number of bs and lowest for fake. 
+```{r}
+data %>% 
+  ggplot(aes(x = type)) +
+  geom_bar() + 
+  labs(x = "Article types", y = "Number of Articles", title = "Distribution of Article Types")
+```
+We can also compare the types against labels. It seems like articles labeled fake are either bs, conspiracy, fake, junksci, or satire, whereas articles labeled real are labeled bias, hate, or state.
+```{r}
+ggplot(data, aes(type)) + 
+  geom_bar(aes(fill = label)) +
+  scale_fill_manual(values = c("#23CE6B", "#6E4ED0")) +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+For this dataset, making a correlation plot is actually not feasible because the only numeric predictor is time -- the rest are text that would better be done through an nlp neural network.
+
+Instead, we will visualize the predictors compared to the label. Keeping in mind that with the label outcome variable a real article is marked as 1, and a fake article is marked as 0.
+
+First we analyze the site urls. It seems that all sites are either majorly real or majorly fake, while some sites have a few outliering articles that are labeled the opposite of what option (real/fake) they usually publish.
+```{r}
+ggplot(data, aes(site_url)) + 
+  geom_bar(aes(fill = label)) +
+  scale_fill_manual(values = c("#23CE6B", "#6E4ED0")) +
+  theme(axis.text.x = element_text(angle = 90))
+```
+In addition, if we consider whether an article has an image, the proportions are similar. If the proportions are very different, it could be an indication that having an image could be an important predictor, however since the proportions look similar, this may or may not be the case.
+
+```{r}
+ggplot(data, aes(has_image)) + 
+  geom_bar(aes(fill = label)) +
+  scale_fill_manual(values = c("#23CE6B", "#6E4ED0"))
+```
+
+Now published month can be assessed. There are only months 10, 11 (October and November). There seems to be a somewhat equal proportion of the months distributed, so months may not be a very strong predictor either.
+
+```{r}
+ggplot(data, aes(published)) + 
+  geom_bar(aes(fill = label)) +
+  scale_fill_manual(values = c("#23CE6B", "#6E4ED0"))
+```
+
+The other data such as title, title_without_stopwords, text, and text_without_stopwords, don't make as much sense to visualize in this way.
+
+### Setting up Models
+
+For data such as title, title_without_stopwords, text, and text_without_stopwords, I've decided to separate them from the dataset to be used in the NLP neural network model instead. For the other models (logistic regression, k nearest-neighbors (knn), and decision tree), I have decided to use the predictors that don't include text or title because it doesn't make sense to keep text in when we need to analyze the semantic meaning of the words in the text, which will require and more complex neural network model instead. Here, data will include the text and title, and data_simple will exclude it.
+```{r splitting non nn dataset and nn dataset}
+data_simple <- subset(data, select = -c(title, title_without_stopwords, text, text_without_stopwords))
+```
+
+### Train and Test Split
+
+Now, I will split the data into a training set and a testing set. I have decided to do 80% to 20% split, as our dataset is pretty large and will have plenty of testing data while being able to have more data to train on. The reason I split is to avoid overfitting -- using 80% of the datset to train, and then having the 20% as testing dataset can help determine if the model is good at predicting new data and not overfit to only the current dataset it was fed. We stratify the data to "label".
+```{r splitting data train and test}
+#split data stratified to label (real/fake)
+data_simple_split <- data_simple %>%
+  initial_split(prop = 0.8, strata = "label")
+
+data_train <- training(data_simple_split) # training split for label
+data_test <- testing(data_simple_split) # testing split for label
+```
+
+We have 1574 observations in our training set, and 394 for testing, which is sufficient for our models to perform efficiently.
+```{r dimension check}
+dim(data_train)
+dim(data_test)
+```
+
+### Building recipe
+I will be using the same predictors, model conditions, and response variables, so for each model, I will create a recipe for predicting label. In the recipes, I'm putting together all of the predictors needed, like gathering ingredients to make our model. I will also standardize and scale the predictors. I will be using author, published time, site_url, main_img_url, and has_image as the predictors.
+```{r building recipes}
+#recipe: predicting label
+label_recipe <- recipe(label ~ author + published +  site_url + main_img_url + has_image, data=data_train) %>%
+  step_dummy(all_nominal_predictors())
+```
+
+### K-fold cross validation
+
+I also made 10 folds for cross validation for stratifying on each label and type. This helps with the unbalanced amount of data.
+```{r k-fold cross val}
+folds <- vfold_cv(data_train, v = 10, strata = label)
+```
+
+Since it takes a long time to build models, I will also save results to an RDA file, so we can load whichever model we want later once we made it and save time.
+```{r}
+save(folds, recipe, data_train, data_test, file = "model_setup.rda")
+```
+
+### Model Building (Logistic Regression, KNN, random forest)
+
+We will implement the neural network last. For the logistic regression, KNN, and random forest model building, this will be the process I will implement:
+1. Set up models as well as the engine and set its mode. For this problem I will use classification as the mode because the nature of the project is to determine type and label.
+2. Set up appropriate workflows, add models and recipes.
+3. Fit that model with our workflow to our training dataset
+4. Fit the results as RDA files so we can load them again.
+5. Assess models
+
+First, we will set up the logistic regression model. Then, we set up the log reg workflows and fit it to training data. They are saved as RDA files so it can be reloaded. We will then assess the model.
+```{r log reg}
+#setting up log reg model
+log_reg <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+#setting up workflows
+logreg_wkflow <- workflow() %>% 
+  add_model(log_reg) %>% 
+  add_recipe(label_recipe)
+
+#Fitting to training dataset -- commented out so we don't need to re-train, just load. Same goes for KNN and Random Forest models.
+#logreg_fit <- fit(logreg_wkflow, data_train)
+#save(logreg_fit, file = "logreg_fit.rda")
+load("logreg_fit.rda")
+
+#plotting ROC curve
+augresults <- augment(logreg_fit, new_data = data_test)
+augresults %>%
+  mutate(.pred_class = as.numeric(.pred_class)) %>% 
+  roc_curve(label, .pred_class, event_level = "second") %>%
+  autoplot()
+
+#assessing the model
+augresults$label <- as.numeric(augresults$label)
+augresults$.pred_class <- as.numeric(augresults$.pred_class)
+roc_object <- roc(augresults$label, augresults$.pred_class )
+roc_object
+```
+The logistic regression model's roc_auc is 0.9734, which is very good!
+
+
+The same steps are repeated for KNN, and we tune the hyperparameter neighbors first to determine the best hyperparameter, neighbors = 2.
+```{r}
+knn_model <- nearest_neighbor(neighbors = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kknn")
+knn_wf <- workflow() %>% 
+  add_recipe(label_recipe) %>% 
+  add_model(knn_model)
+
+#tuning grid for knn
+knn_grid <- grid_regular(neighbors(range = c(1, 10)), levels = 10)
+
+# # Perform grid search with cross-validation
+# tune_knn <- tune_grid(
+#   object = knn_wf,
+#   resamples = folds, 
+#   grid = knn_grid
+# )
+
+# # Get the optimal value for neighbors
+# best_neighbors <- select_best(tune_knn, metric = "accuracy") %>%
+#   pull(neighbors)
+# best_neighbors
+```
+
+We repeat the steps from before with the best hyperparameter. The results show that roc_auc is 0.5, which is very bad. This means that the model is no better than random guessing.
+```{r}
+knn_model <- nearest_neighbor(neighbors = 2) %>%
+  set_mode("classification") %>%
+  set_engine("kknn")
+# knn_fit <- fit(knn_wf, data_train)
+#save(knn_fit, file = "knn_fit.rda")
+load("knn_fit.rda")
+
+#plotting ROC curve
+knnaugresults <- augment(knn_fit, new_data = data_test)
+knnaugresults %>%
+  mutate(.pred_class = as.numeric(.pred_class)) %>% 
+  roc_curve(label, .pred_class, event_level = "second") %>%
+  autoplot()
+
+#assessing the model
+knnaugresults$label <- as.numeric(knnaugresults$label)
+knnaugresults$.pred_class <- as.numeric(knnaugresults$.pred_class)
+knnroc_object <- roc(knnaugresults$label, knnaugresults$.pred_class )
+knnroc_object
+
+```
+
+Now we perform the random forest model. We build the model, set up a workflow, create a grid, and tune. Then, after getting the best hyperparameters and choosing the best model we can assess it's roc_auc and compare if it is better than the other models.
+```{r}
+rf <- rand_forest(mtry = tune(), 
+                    trees = tune(), 
+                    min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("classification")
+
+rf_wf <- workflow() %>% 
+  add_model(rf) %>% 
+  add_recipe(label_recipe) 
+
+#create grid
+reggrid <- grid_regular(mtry(range = c(1, 8)), trees(range = c(200, 600)), min_n(range = c(10, 20)),levels = 3)
+
+#tune random forest
+#tune_rf <- tune_grid(
+#  rf_wf, 
+#  resamples = folds,
+#  grid = reggrid
+#)
+
+#save(tune_rf, file = "tune_rf.rda")
+load("tune_rf.rda")
+
+autoplot(tune_rf) + theme_minimal()
+```
+
+```{r}
+#showing best random forest tuned parameters
+show_best(tune_rf, n = 1)
+best_rf_reg <- select_best(tune_rf)
+
+#finalizing workflow of best random forest model
+final_wf_rf <- finalize_workflow(rf_wf, best_rf_reg)
+final_fit_rf <- fit(final_wf_rf, data_train)
+final_fit_rf
+```
+
+```{r}
+prob_predictions <- predict(final_fit_rf, new_data = data_test, type = "prob")
+
+# add the truth column to the predictions
+prob_predictions <- prob_predictions %>% bind_cols(data_test %>% dplyr::select(label))
+
+# plot the ROC curve
+truth <- as.numeric(as.character(prob_predictions$label))
+roc_obj <- roc(truth, prob_predictions$.pred_1)
+roc_obj
+```
+
+```{r}
+plot(roc_obj, main="ROC Curve", xlab="False Positive Rate", ylab="True Positive Rate", col="#377eb8", lwd=4)
+```
+
+### Implementing a neural network
+
+Now I will implement a neural network that includes article text and title, using the processed article text: text_without_stopwords. Stopwords are simple words like "the", "a", etc which won't provide any value to the prediction training and testing, so these are removed ahead of time.
+
+First, we load and preprocess the data.
+```{r}
+#create tokenizer object, keeping a maximum of 10,000 unique words
+tokenizer <- text_tokenizer(num_words = 10000) %>% fit_text_tokenizer(data$text_without_stopwords)
+#converts the text data into sequences of integars
+sequences <- texts_to_sequences(tokenizer, data$text_without_stopwords)
+#sequence padding -- ensures all have same length to length of 500
+data_nn <- pad_sequences(sequences, maxlen = 500)
+```
+
+Next, we prepare the labels
+```{r}
+labels <- as.numeric(data$label)
+# make it '0' and '1' instead of '1' and '2'
+labels <- labels - 1
+```
+
+### Splitting train and testing and validation data
+
+Once again, we will split the data for train and validation at 80-20 for predicting label.
+```{r nlp neural net - splitting test/train}
+indices <- 1:nrow(data_nn)
+train_indices <- sample(indices, size = floor(0.8 * length(indices)))
+val_indices <- setdiff(indices, train_indices)
+
+x_train <- data_nn[train_indices, ]
+y_train <- labels[train_indices]
+
+x_val <- data_nn[val_indices, ]
+y_val <- labels[val_indices]
+```
+
+### Making the neural net layers
+
+Now we will build the model. Neural networks have layers within the model and are filtered by activation functions. Relu makes everything nonnegative, and the sigmoid function will separate the binary outcome results.
+```{r}
+model <- keras_model_sequential() %>%
+  layer_embedding(input_dim = 10000, output_dim = 32, input_length = 500) %>%
+  layer_flatten() %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 1, activation = 'sigmoid')  # '1' for binary classification, 'sigmoid' activation
+```
+
+
+Now I will compile the model with an optimizer and a loss function. For a binary classification problem like this, I used the loss function 'binary_crossentropy'. A loss function, or a cost function, is a measure of how well a machine learning model is performing during training. It evaluates the difference between the predicted outputs of the model and the true values in the training data. 'epochs' is the number of times the learning algorithm will work through the entire training dataset, and 'batch_size' is the number of samples to work through before the model's internal parameters are updated.
+```{r}
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'binary_crossentropy',
+  metrics = c('accuracy')
+)
+```
+
+### Training the model
+
+Now I am fitting the model to the training data. 'epochs' is the number of times the learning algorithm will work through the entire training dataset, and 'batch_size' is the number of samples to work through before the model's internal parameters are updated.
+```{r}
+history <- model %>% fit(
+  x_train, y_train,
+  epochs = 10,
+  batch_size = 32,
+  validation_data = list(x_val, y_val)
+)
+```
+
+###Evaluating the model
+After training, I will now evaluate the performance of the model using the validation data.
+```{r}
+model %>% evaluate(x_val, y_val)
+```
+
+
+### Make predictions
+After evaluating the performance of the model, I will use the model to make predictions on new data.
+
+```{r}
+new_sequences <- texts_to_sequences(tokenizer, "billion even after they are known to be keeping all supposedly deleted messages in their server well i guess they need to somehow profitprobably selling content to rich blackmailers")
+new_data <- pad_sequences(new_sequences, maxlen = 500)
+
+predictions <- model %>% predict(new_data) %>% `>`(0.5) %>% k_cast("int32")
+
+print(predictions)
+```
+
+### Conclusion
+
+Overall in this project we have discovered and analyzed new findings in this dataset to build and test a model that predicts the realness or fakeness of a given article. The logistic regression had great roc_auc results, the KNN model had bad roc_auc results, and the random forest had the best roc_auc results. 
+
+The neural net had a 0.7 accuracy on test data, and training dataset had 99.8% accuracy, so the NN was definitely overfit. 
+
+Our best model still did very good! The model may not be perfect, but the results were very satisfactory in the end as an roc_auc above a .9 is excellent!
+
